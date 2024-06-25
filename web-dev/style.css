@@ -4,3 +4,8 @@ body {
     background: #FAFAFA;
     font-family: Helvetica;
 }
+
+.image {
+    height: 200px;
+    width: auto;
+}

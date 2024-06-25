@@ -4,3 +4,6 @@ open! Core
     (https://github.com/aantron/lambdasoup) to parse HTML. *)
 
 val command : Command.t
+val get_first_item_of_all_unordered_lists : string -> string list
+val get_first_item_of_second_unordered_list : string -> string
+val get_bolded_text : string -> string list

@@ -116,13 +116,44 @@ let visualize_command =
         printf !"Done! Wrote dot file to %{File_path}\n%!" output_file]
 ;;
 
+let rec find_friends network friend_set = 
+(* TODO: make this pass in a network of the removed friends *)
+  let next_degree_friends = (Set.filter_map (module Person) network ~f:(fun (person1, person2) ->
+  match (Set.mem friend_set person1), (Set.mem friend_set person2) with 
+  | true, false -> Some person2
+  | false, true -> Some person1
+  | _, _ -> None)) in
+  match Set.is_empty next_degree_friends with
+  | true -> friend_set
+  | false -> find_friends network (Set.union next_degree_friends friend_set)
+  (* |> match find_friends network with 
+  | Some new_friend_set -> new_friend_set
+  | None -> friend_set *)
+;;
+
 (* [find_friend_group network ~person] returns a list of all people who are mutually
    connected to the provided [person] in the provided [network]. *)
-let find_friend_group network ~person : Person.t list =
-  ignore (network : Network.t);
-  ignore (person : Person.t);
-  failwith "TODO"
+let find_friend_group network ~(person : string) =
+  let degree0 = Set.singleton (module Person) person in
+  Set.elements (find_friends network degree0) 
+  (* let degree1 = Set.add (Set.filter_map (module Person) network ~f:(fun (person1, person2) ->
+    match (Person.equal person person1), (Person.equal person person2) with
+    | true, false -> Some person2
+    | false, true -> Some person1
+    | _, _ -> None)) person in
+    let degree2 = Set.filter_map (module Person) network ~f:(fun (person1, person2) ->
+      match (Set.mem degree1 person1), (Set.mem degree1 person2) with 
+      | true, false -> Some person2
+      | false, true -> Some person1
+      | _, _ -> None) in Set.elements degree2 *)
+    (* let degree2 = Set.filter *)
+  (* let visited = Set in
+  
+  Set.iter network ~f:(fun person1 person2 ->
+    ) *)
 ;;
+
+
 
 let find_friend_group_command =
   let open Command.Let_syntax in
