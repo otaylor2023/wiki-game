@@ -15,6 +15,19 @@ open! Core
     uniformity in article format. We can expect that all Wikipedia article links parsed
     from a Wikipedia page will have the form "/wiki/<TITLE>". **)
 
+let _get_linked_articles contents : string list =
+  let open Soup in
+  parse contents
+  $$ "a[href^='/wiki/']"
+  |> to_list
+  |> List.filter_map ~f:(fun a ->
+    match Wikipedia_namespace.namespace (R.attribute "href" a) with
+    | None -> Some (R.attribute "href" a)
+    | _ -> None)
+  |> String.Hash_set.of_list
+  |> Hash_set.to_list
+;;
+
 let get_linked_articles contents : string list =
   let open Soup in
   parse contents
@@ -26,6 +39,8 @@ let get_linked_articles contents : string list =
     | _ -> None)
   |> List.dedup_and_sort ~compare:String.compare
 ;;
+
+(* List.dedup_and_sort ~compare:String.compare *)
 
 (*TODO: optimize *)
 (* (String.is_prefix (R.attribute "href" a) ~prefix:"/wiki/"), *)
@@ -42,12 +57,24 @@ let print_links_command =
 ;;
 
 module Article = struct
-  type t =
-    { title : string
-    ; url : string
-    ; path : string list
-    }
-  [@@deriving compare, sexp, hash, equal]
+  module T = struct
+    type t =
+      { title : string
+      ; url : string
+      ; path : string list
+      }
+    [@@deriving compare, sexp]
+
+    let equal (t1 : t) (t2 : t) = String.equal t1.url t2.url
+    let hash (t1 : t) = String.hash t1.url
+
+    let hash_fold_t (state : Ppx_hash_lib.Std.Hash.state) (t1 : t) =
+      String.hash_fold_t state t1.url
+    ;;
+  end
+
+  include Hashable.Make (T)
+  include T
 
   let of_string ~url ~path =
     let title =
@@ -181,37 +208,101 @@ let is_https_pref (url : string) : bool =
   String.is_prefix url ~prefix:"https"
 ;;
 
-let get_child_articles (article : Article.t) ~how_to_fetch : Article.t list =
+let add_child_articles
+  (current_set : Article.Hash_set.t)
+  (article : Article.t)
+  ~how_to_fetch
+  (ignore_list : string Hash_set.t)
+  =
   let is_parent_external = is_https_pref article.url in
   File_fetcher.fetch_exn how_to_fetch ~resource:article.url
   |> get_linked_articles
-  |> List.map ~f:(fun child_link ->
-    let child_url =
-      match is_parent_external with
-      | false -> child_link
-      | true ->
-        (match is_https_pref child_link with
-         | true -> child_link
-         | false -> String.append "https://en.wikipedia.org" child_link)
-    in
-    Article.of_string
-      ~url:child_url
-      ~path:(List.append [ child_url ] article.path))
+  |> List.iter ~f:(fun child_link ->
+    match not (Hash_set.mem ignore_list child_link) with
+    | false -> ()
+    | true ->
+      let child_url =
+        match is_parent_external with
+        | false -> child_link
+        | true ->
+          (match is_https_pref child_link with
+           | true -> child_link
+           | false -> String.append "https://en.wikipedia.org" child_link)
+      in
+      let child_article =
+        Article.of_string
+          ~url:child_url
+          ~path:(List.append [ child_url ] article.path)
+      in
+      Hash_set.add current_set child_article)
 ;;
 
+let get_child_articles
+  (article : Article.t)
+  ~how_to_fetch
+  (ignore_list : string Hash_set.t option)
+  : Article.Hash_set.t
+  =
+  let child_articles = Article.Hash_set.create ~growth_allowed:true () in
+  let is_parent_external = is_https_pref article.url in
+  File_fetcher.fetch_exn how_to_fetch ~resource:article.url
+  |> get_linked_articles
+  |> List.iter ~f:(fun child_link ->
+    let get_child_url link =
+      match is_parent_external with
+      | false -> link
+      | true ->
+        (match is_https_pref link with
+         | true -> link
+         | false -> String.append "https://en.wikipedia.org" link)
+    in
+    let child_url =
+      match ignore_list with
+      | None -> Some (get_child_url child_link)
+      | Some ignore_list ->
+        (match not (Hash_set.mem ignore_list child_link) with
+         | false -> None
+         | true -> Some (get_child_url child_link))
+    in
+    match child_url with
+    | Some child_url ->
+      Article.of_string
+        ~url:child_url
+        ~path:(List.append [ child_url ] article.path)
+      |> Hash_set.add child_articles
+    | None -> ());
+  child_articles
+;;
+
+(* |> List.map ~f:(fun child_link -> let child_url = match is_parent_external
+   with | false -> child_link | true -> (match is_https_pref child_link with
+   | true -> child_link | false -> String.append "https://en.wikipedia.org"
+   child_link) in Article.of_string ~url:child_url ~path:(List.append [
+   child_url ] article.path)) *)
+
 let rec find_path_bfs
-  ~(nth_degree_articles : Article.t list)
-  ~(destination : Article.t)
-  ~(explored_articles : Article.t list)
+  ~(nth_degree_articles : Article.Hash_set.t)
+  ~(destination : Article.T.t)
+  ~(explored_articles : string Hash_set.t)
   ~(* TODO: convert to set *)
   (depth_left : int)
   ~how_to_fetch
   : string list option
   =
+  (* let was_found = Hash_set.mem nth_degree_articles destination in match
+     was_found, Int.equal depth_left 0 with | _, true -> None | true, _ ->
+     let found_dest = Hash_set.find nth_degree_articles ~f:(fun article ->
+     Article.url_equal article destination) in (match found_dest with | Some
+     found_dest -> Some found_dest.path | None -> None) | false, _ -> *)
+  (* print_s [%message (Hash_set.length nth_degree_articles : int)]; *)
+  (* let time1 = Time_float.now () in *)
   let found =
-    List.find nth_degree_articles ~f:(fun article ->
+    Hash_set.find nth_degree_articles ~f:(fun article ->
       Article.url_equal article destination)
   in
+  (* let time2 = Time_float.now () in *)
+  (* let () = print_s [%message (Time_float.diff time2 time1 :
+     Time_float.Span.t)] in *)
   match found, Int.equal depth_left 0 with
   | Some found_dest, _ -> Some found_dest.path
   | _, true -> None
@@ -220,16 +311,29 @@ let rec find_path_bfs
        into new explored list stop if list length is 1*)
     (* make list of next level of child articles *)
     let next_degree_articles =
-      List.concat_map nth_degree_articles ~f:(fun article ->
-        let children = get_child_articles article ~how_to_fetch in
-        List.filter children ~f:(fun child ->
-          not (List.mem explored_articles child ~equal:Article.url_equal)))
+      Article.Hash_set.create ~growth_allowed:true ~size:10500 ()
     in
-    let new_explored = List.append explored_articles next_degree_articles in
+    let () =
+      Hash_set.iter nth_degree_articles ~f:(fun article ->
+        (* let time_now = Time_now.nanoseconds_since_unix_epoch () in let ()
+           = print_s [%message (time_now : Int63.t)] in *)
+        add_child_articles
+          next_degree_articles
+          article
+          ~how_to_fetch
+          explored_articles)
+    in
+    (* List.concat_map nth_degree_articles ~f:(fun article -> let children =
+       get_child_articles article ~how_to_fetch in List.filter children
+       ~f:(fun child -> match not (Hash_set.mem explored_articles child.url)
+       with | true -> Hash_set.add explored_articles child.url; true | false
+       -> false)) *)
+    (* let new_explored = List.append explored_articles next_degree_articles
+       in *)
     find_path_bfs
       ~nth_degree_articles:next_degree_articles
       ~destination
-      ~explored_articles:new_explored
+      ~explored_articles
       ~depth_left:(depth_left - 1)
       ~how_to_fetch
 ;;
@@ -255,45 +359,20 @@ let rec find_path_bfs
    child_article -> List.mem explored_articles child_article
    ~equal:Article.url_equal)) |> List.append explored_articles)) *)
 
-let rec find_path_rec
-  ~(current_article : Article.t)
-  ~(destination : Article.t)
-  ~(path_so_far : Article.t list)
-  ~(depth_left : int)
-  ~how_to_fetch
-  : Article.t list option
-  =
-  if Int.equal depth_left 0
-  then None
-  else (
-    let new_path = path_so_far @ [ current_article ] in
-    let child_articles = get_child_articles current_article ~how_to_fetch in
-    let () =
-      print_s
-        [%message
-          (current_article : Article.t) (List.length child_articles : int)]
-    in
-    let rest_of_path =
-      List.find_map child_articles ~f:(fun child_article ->
-        match
-          ( List.mem path_so_far child_article ~equal:Article.equal
-          , Article.equal child_article destination )
-        with
-        | _, true -> Some [ child_article ]
-        | false, false ->
-          find_path_rec
-            ~current_article:child_article
-            ~destination
-            ~path_so_far:new_path
-            ~depth_left:(depth_left - 1)
-            ~how_to_fetch
-        | _, _ -> None)
-    in
-    match rest_of_path with
-    | Some rest_of_path ->
-      Some (List.append [ current_article ] rest_of_path)
-    | None -> None)
-;;
+(* let rec find_path_rec ~(current_article : Article.t) ~(destination :
+   Article.t) ~(path_so_far : Article.t list) ~(depth_left : int)
+   ~how_to_fetch : Article.t list option = if Int.equal depth_left 0 then
+   None else ( let new_path = path_so_far @ [ current_article ] in let
+   child_articles = get_child_articles current_article ~how_to_fetch in let
+   () = print_s [%message (current_article : Article.t) (List.length
+   child_articles : int)] in let rest_of_path = List.find_map child_articles
+   ~f:(fun child_article -> match ( List.mem path_so_far child_article
+   ~equal:Article.equal , Article.equal child_article destination ) with | _,
+   true -> Some [ child_article ] | false, false -> find_path_rec
+   ~current_article:child_article ~destination ~path_so_far:new_path
+   ~depth_left:(depth_left - 1) ~how_to_fetch | _, _ -> None) in match
+   rest_of_path with | Some rest_of_path -> Some (List.append [
+   current_article ] rest_of_path) | None -> None) ;; *)
 
 (* [find_path] should attempt to find a path between the origin article and
    the destination article via linked articles.
@@ -304,16 +383,25 @@ let rec find_path_rec
 
    [max_depth] is useful to limit the time the program spends exploring the
    graph. *)
-let _find_path ?(max_depth = 3) ~origin ~destination ~how_to_fetch () =
-  let origin_article = Article.of_string ~url:origin ~path:[] in
-  let destination_article = Article.of_string ~url:destination ~path:[] in
-  find_path_rec
-    ~current_article:origin_article
-    ~destination:destination_article
-    ~path_so_far:[]
-    ~depth_left:max_depth
-    ~how_to_fetch
-;;
+(* let _find_path ?(max_depth = 3) ~origin ~destination ~how_to_fetch () =
+   let origin_article = Article.of_string ~url:origin ~path:[] in let
+   destination_article = Article.of_string ~url:destination ~path:[] in
+   find_path_rec ~current_article:origin_article
+   ~destination:destination_article ~path_so_far:[] ~depth_left:max_depth
+   ~how_to_fetch ;; *)
+
+(* let run_bfs (n : int) (child_articles : Article.t list)
+   (destination_article : Article.t) ~how_to_fetch (max_depth : int) = match
+   find_path_bfs ~nth_degree_articles:child_articles
+   ~destination:destination_article ~explored_articles:
+   (String.Hash_set.create ~growth_allowed:true ~size:500 ()) ~how_to_fetch
+   ~depth_left:max_depth with | None -> print_endline "No path found!"; [] |
+   Some trace -> trace ;; *)
+
+(* let end_time = Time_now.nanoseconds_since_unix_epoch () in let time_taken
+   = Base.Int63.( - ) end_time start_time in print_s [%message (trace :
+   string list) ~time_taken: (Float.( / ) (Float.of_int63 time_taken)
+   (Float.of_int 1000000000) : Float.t)]] *)
 
 let find_path_command =
   let open Command.Let_syntax in
@@ -333,11 +421,12 @@ let find_path_command =
           ~doc:"INT maximum length of path to search for (default 10)"
       in
       fun () ->
+        let start_time = Time_now.nanoseconds_since_unix_epoch () in
         let origin_article =
           Article.of_string ~url:origin ~path:[ origin ]
         in
         let child_articles =
-          get_child_articles origin_article ~how_to_fetch
+          get_child_articles origin_article ~how_to_fetch None
         in
         let destination_article =
           Article.of_string ~url:destination ~path:[]
@@ -346,12 +435,23 @@ let find_path_command =
           find_path_bfs
             ~nth_degree_articles:child_articles
             ~destination:destination_article
-            ~explored_articles:[]
+            ~explored_articles:
+              (String.Hash_set.create ~growth_allowed:true ~size:500 ())
             ~how_to_fetch
             ~depth_left:max_depth
         with
         | None -> print_endline "No path found!"
-        | Some trace -> print_s [%message (trace : string list)]]
+        | Some trace ->
+          let end_time = Time_now.nanoseconds_since_unix_epoch () in
+          let time_taken_int = Base.Int63.( - ) end_time start_time in
+          let time_taken_float =
+            Float.( / )
+              (Float.of_int63 time_taken_int)
+              (Float.of_int 1000000000)
+          in
+          print_s
+            [%message
+              (trace : string list) ~time_taken:(time_taken_float : Float.t)]]
 ;;
 
 let command =

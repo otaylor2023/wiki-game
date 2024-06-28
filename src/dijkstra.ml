@@ -112,17 +112,23 @@ module Nodes = struct
      found in the edge list. Note that you can construct [Node.t]s with the
      [Node.init] function. *)
   let of_edges (edges : Edge.t list) =
-    let map =
-      List.fold
-        edges
-        ~init:(Map.empty (module Node_id))
-        ~f:(fun map edge ->
-          let node_a = Node.init () in
-          let node_b = Node.init () in
-          Map.add_exn map ~key:edge.a ~data:node_a
-          |> Map.add_exn ~key:edge.b ~data:node_b)
-    in
-    map
+    List.fold
+      edges
+      ~init:(Map.empty (module Node_id))
+      ~f:(fun map edge ->
+        let node_a = Node.init () in
+        let node_b = Node.init () in
+        let map_1 =
+          match Map.add map ~key:edge.a ~data:node_a with
+          | Map.(`Ok map_a) -> map_a
+          | Map.(`Duplicate) -> map
+        in
+        let map_2 =
+          match Map.add map_1 ~key:edge.b ~data:node_b with
+          | Map.(`Ok map_b) -> map_b
+          | Map.(`Duplicate) -> map_1
+        in
+        map_2)
   ;;
 
   let find = Map.find_exn
@@ -179,7 +185,7 @@ module Nodes = struct
       | _ -> None
     in
     match next_path with
-    | Some next_path -> List.append [ current_id ] next_path
+    | Some next_path -> List.append next_path [ current_id ]
     | None -> []
   ;;
 
@@ -188,7 +194,9 @@ module Nodes = struct
      shortest path have been marked as [Done] -- return the path from the
      origin to the given [distination]. *)
   let path (t : t) (destination : Node_id.t) : Node_id.t list =
-    find_path t destination
+    match Map.find t destination with
+    | Some node -> find_path t destination
+    | None -> []
   ;;
 
   (* Excercise 5: Write an expect test for the [path] function above. *)
@@ -207,29 +215,69 @@ module Nodes = struct
     in
     let node_path = path t in
     print_s [%message (node_path n3 : Node_id.t list)];
-    [%expect {| ("node_path n3" (3 2 1 0)) |}]
+    [%expect {| ("node_path n3" (0 1 2 3)) |}]
   ;;
 end
 
-let rec shortest_path_rec ~(edges : Edge.t list) ~(destination : Node_id.t) = 
-  
+let rec shortest_path_rec
+  ~(nodes : Nodes.t)
+  ~(edges : Edge.t list)
+  ~(destination : Node_id.t)
+  =
+  let next_node_info = Nodes.next_node nodes in
+  match next_node_info with
+  | None -> ()
+  | Some (next_node_id, (distance, via)) ->
+    (* print_s [%message (next_node_id : Node_id.t)]; *)
+    (* match Node_id.equal node_id destination with | true -> destination |
+       false -> *)
+    List.iter
+      (Edges.neighbors edges next_node_id)
+      ~f:(fun (child_node_id, edge_dist) ->
+        let new_dist = edge_dist + distance in
+        let child_node = Map.find_exn nodes child_node_id in
+        let set_dist x =
+          Node.set_state
+            x
+            (Node.State.Todo { via = next_node_id; distance = new_dist })
+        in
+        match child_node.state with
+        | Todo { distance = old_dist; via } ->
+          if old_dist > new_dist then set_dist child_node
+        | Unseen -> set_dist child_node
+        | Done _ | _ -> ());
+    let next_node = Map.find_exn nodes next_node_id in
+    next_node.state <- Node.State.Done { via };
+    shortest_path_rec ~nodes ~edges ~destination
 ;;
 
 (* Exercise 6: Using the functions and types above, implement Dijkstras graph
    search algorithm! Remember to reenable unused warnings by deleting the
    first line of this file. : Node_id.t list*)
-let shortest_path ~(edges : Edge.t list) ~(origin : Node_id.t) ~(destination : Node_id.t) = 
+let shortest_path
+  ~(edges : Edge.t list)
+  ~(origin : Node_id.t)
+  ~(destination : Node_id.t)
+  =
   let nodes = Nodes.of_edges edges in
   let origin_node = Map.find_exn nodes origin in
   let () = Node.set_state origin_node Node.State.Origin in
-  List.iter (Edges.neighbors edges origin) ~f:(fun (node_id, dist) ->
-    Node.set_state (Map.find_exn nodes node_id) (Node.State.Todo {via = origin; distance = dist})
-    );
-
-
+  List.iter
+    (Edges.neighbors edges origin)
+    ~f:(fun (neighbor_id, edge_dist) ->
+      Node.set_state
+        (Map.find_exn nodes neighbor_id)
+        (Node.State.Todo { via = origin; distance = edge_dist }));
+  shortest_path_rec ~nodes ~edges ~destination;
+  let path = Nodes.path nodes destination in
+  path
 ;;
 
-let%expect_test ("shortest_path" [@tags "disabled"]) =
+(* List.iter (Edges.neighbors edges origin) ~f:(fun (node_id, dist) ->
+   Node.set_state (Map.find_exn nodes node_id) (Node.State.Todo {via =
+   origin; distance = dist}) ); *)
+
+let%expect_test "shortest_path" =
   let n = Node_id.create in
   let n0, n1, n2, n3, n4, n5 = n 0, n 1, n 2, n 3, n 4, n 5 in
   let edges =
@@ -251,3 +299,64 @@ let%expect_test ("shortest_path" [@tags "disabled"]) =
 
 (* Exercise 7: Add some more test cases, exploring any corner cases you can
    think of. *)
+
+let%expect_test "no_path_found" =
+  let n = Node_id.create in
+  let n0, n1, n2, n3, n4, n5 = n 0, n 1, n 2, n 3, n 4, n 5 in
+  let edges =
+    Edge.
+      [ { a = n0; b = n1; distance = 1 }
+      ; { a = n1; b = n2; distance = 1 }
+      ; { a = n2; b = n3; distance = 1 }
+      ; { a = n2; b = n4; distance = 1 }
+      ]
+  in
+  let origin = n0 in
+  let destination = n5 in
+  let path = shortest_path ~edges ~origin ~destination in
+  print_s ([%sexp_of: Node_id.t list] path);
+  [%expect {| () |}]
+;;
+
+let%expect_test "long vs short path" =
+  let n = Node_id.create in
+  let n0, n1, n2, n3, n4, n5 = n 0, n 1, n 2, n 3, n 4, n 5 in
+  let edges =
+    Edge.
+      [ { a = n0; b = n1; distance = 1 }
+      ; { a = n1; b = n2; distance = 1 }
+      ; { a = n2; b = n3; distance = 1 }
+      ; { a = n2; b = n4; distance = 1 }
+      ; { a = n0; b = n5; distance = 100 }
+      ; { a = n4; b = n5; distance = 1 }
+      ]
+  in
+  let origin = n0 in
+  let destination = n5 in
+  let path = shortest_path ~edges ~origin ~destination in
+  print_s ([%sexp_of: Node_id.t list] path);
+  [%expect {| (0 1 2 4 5) |}]
+;;
+
+let%expect_test "funky path" =
+  let n = Node_id.create in
+  let n0, n1, n2, n3, n4, n5 = n 0, n 1, n 2, n 3, n 4, n 5 in
+  let edges =
+    Edge.
+      [ { a = n0; b = n4; distance = 4 }
+      ; { a = n0; b = n5; distance = 4 }
+      ; { a = n4; b = n3; distance = 2 }
+      ; { a = n2; b = n5; distance = 7 }
+      ; { a = n4; b = n1; distance = 14 } (**)
+      ; { a = n3; b = n5; distance = 5 }
+      ; { a = n5; b = n1; distance = 18 }
+      ; { a = n3; b = n2; distance = 4 }
+      ; { a = n2; b = n1; distance = 3 }
+      ]
+  in
+  let origin = n0 in
+  let destination = n1 in
+  let path = shortest_path ~edges ~origin ~destination in
+  print_s ([%sexp_of: Node_id.t list] path);
+  [%expect {| (0 4 3 2 1) |}]
+;;

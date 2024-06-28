@@ -15,9 +15,9 @@ open! Core
    include Comparable.Make (T) include T end
 
    module Maze = struct type t = { maze : Node.t NodeId.Map.t ; start_node :
-   Node.t option } end
+   Node.t option } end *)
 
-   let get_neighbors (node_id : NodeId.t) : NodeId.t list = [ { NodeId.row =
+(* let get_neighbors (node_id : NodeId.t) : NodeId.t list = [ { NodeId.row =
    node_id.row + 1; col = node_id.col } ; { NodeId.row = node_id.row - 1; col
    = node_id.col } ; { NodeId.row = node_id.row; col = node_id.col + 1 } ; {
    NodeId.row = node_id.row; col = node_id.col - 1 } ] ;; *)
@@ -98,7 +98,7 @@ let rec find_path
    let neighbor_node = Map.find_exn map.maze neighbor_coord in match List.mem
    path_so_far neighbor_node ~equal:Node.equal with | true -> None | false ->
    Some (match neighbor_node.node_type with | Regular | Start -> path_so_far
-   @ find_path neighbor_node map path_so_far | End -> [ neighbor_node ])))
+   @ _find_path neighbor_node map path_so_far | End -> [ neighbor_node ])))
    ;; *)
 
 let solve_command =
